@@ -1,0 +1,13 @@
+# Ignore Python bytecode files
+__pycache__/
+# Ignore .env files (for sensitive data like API keys)
+.env
+# Ignore log files
+logs/
+# Ignore docs
+docs/
+# Ignore my test files
+*_test.py
+*.ipynb
+*.zip
+*.csv
