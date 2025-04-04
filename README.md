@@ -10,6 +10,36 @@
 - **标点裁剪策略**：基于标点符号智能裁剪缓冲区，优化实时处理效率。
 
 ## 快速开始
+---
+
+### ⚙️ 安装 PyTorch（必需）
+
+Faster-Whisper 基于 PyTorch，因此请先根据你的设备（CPU/GPU）安装 PyTorch。
+
+推荐使用 CUDA 12.1 的 GPU 加速版本（如需 CPU 可略去 CUDA 说明）：
+
+```bash
+# GPU（CUDA 12.1）
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+验证是否安装成功：
+
+```bash
+python -c "import torch; print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+输出应为：
+
+```bash
+True
+12.1
+```
+
+若为 `False`，说明当前 PyTorch 未启用 GPU，请确认驱动、CUDA Toolkit 等是否正确安装。
+
+---
+
 ### 1. 安装依赖
 建议使用 Python 3.8+，推荐使用虚拟环境。
 
