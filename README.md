@@ -10,15 +10,60 @@
 - **标点裁剪策略**：基于标点符号智能裁剪缓冲区，优化实时处理效率。
 
 ## 快速开始
-### 安装依赖
+### 1. 安装依赖
+建议使用 Python 3.8+，推荐使用虚拟环境。
+
 ```bash
-pip install numpy librosa faster-whisper soundfile asyncio
+pip install numpy librosa faster-whisper soundfile asyncio fastapi uvicorn
+```
+> 如遇 `librosa` 安装报错，请确保 `ffmpeg` 和 `libav` 等依赖正确安装。
+
+---
+
+### 2. 启动 FastAPI 后端
+
+后端接口文件为 `whisper_api.py`，你可以使用 `uvicorn` 启动服务：
+
+```bash
+uvicorn whisper_api:app --host 0.0.0.0 --port 8000
 ```
 
-### 使用方法
+- 默认监听在本地 `localhost:8000`
+- 模型会下载/缓存到你指定的路径（如 `D:\workspace\models\whisper`）
+
+---
+
+### 3. 打开 Web 前端进行测试
+
+你可以直接在浏览器打开前端页面 `index.html`：
+
 ```bash
-python simulate_audio_stream.py
+# 示例：
+file:///your_project_path/index.html
 ```
+
+点击页面上的 **Start** 按钮，即可开始从麦克风采集音频并推送至后端。每隔 500ms 推送一次音频片段，并通过 WebSocket 获取转写结果，实时展示字幕：
+
+- ✅ **绿色边框**：正在推理中
+- 🔴 **红色边框**：未连接或推理已停止
+
+---
+
+### ✅ 文件结构说明
+
+```text
+.
+├── whisper_stream.py                # 推理主逻辑与缓冲管理
+├── whisper_api.py                   # FastAPI 后端服务
+├── index.html                       # 前端实时字幕页面
+├── simulate_audio_stream.py         # 离线测试模拟器（可选）
+├── data/
+│   └── maigo_center_1182mins.wav    # 测试用音频数据（迷子集会2分钟片段）
+└── README.md
+
+```
+
+---
 
 ### 自定义设置
 可以在`simulate_audio_stream.py`中调整以下参数：
