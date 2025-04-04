@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Realtime Whisper Transcription</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background-color: #f4f4f8;
+      margin: 0;
+      padding: 0;
+    }
+  
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+  
+    h1 {
+      color: #333;
+      text-align: center;
+    }
+  
+    #responseContainer {
+      background: white;
+      padding: 1rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      min-height: 300px;
+      overflow-y: auto;
+      position: relative;
+      border: 4px solid red; /* 默认红色边框 */
+      transition: border-color 0.3s ease;
+    }
+  
+    .confirmed-bubble {
+      background: #d1f7c4;
+      color: #1b381a;
+      padding: 0.5rem 1rem;
+      margin: 0.5rem 0;
+      border-radius: 10px;
+      display: inline-block;
+      max-width: 100%;
+    }
+  
+    .unconfirmed {
+      color: #888;
+      font-style: italic;
+      margin-top: 0.5rem;
+      margin-bottom: 0.25rem;
+      position: sticky;
+      bottom: 0;
+      background-color: white;
+      padding: 0.25rem;
+    }
+  
+    .controls {
+      text-align: center;
+      margin-top: 1.5rem;
+    }
+  
+    button {
+      padding: 0.75rem 1.5rem;
+      margin: 0 0.5rem;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.2s ease, transform 0.1s ease;
+    }
+  
+    button:hover {
+      filter: brightness(1.1);
+    }
+  
+    button:active {
+      transform: scale(0.97);
+      filter: brightness(0.95);
+    }
+  
+    #startButton {
+      background-color: #4CAF50;
+      color: white;
+    }
+  
+    #stopButton {
+      background-color: #f44336;
+      color: white;
+    }
+  </style>  
+</head>
+<body>
+  <div class="container">
+    <h1>🎙️ Whisper Realtime Subtitle</h1>
+    <div id="responseContainer"></div>
+    <div class="controls">
+      <button id="startButton">Start</button>
+      <button id="stopButton">Stop</button>
+    </div>
+  </div>
+
+  <script src="https://www.WebRTC-Experiment.com/RecordRTC.js"></script>
+  <script>
+    let ws;
+    let recorder;
+    
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        reader.onload = () => {
+          const base64String = reader.result.split(',')[1];
+          resolve(base64String);
+        };
+        reader.onerror = (error) => reject(error);
+      });
+    }
+    
+    function setupWebSocket() {
+      return new Promise((resolve, reject) => {
+        ws = new WebSocket('ws://localhost:8000/ws');
+    
+        ws.onopen = () => {
+          console.log('✅ WebSocket opened');
+          resolve(ws);
+        };
+    
+        ws.onerror = (err) => {
+          console.error('❌ WebSocket connection error:', err);
+          alert('❌ 无法连接到后端服务器，请确认 FastAPI 是否在运行。');
+          reject(err);
+        };
+    
+        ws.onclose = () => {
+          console.log('🔌 WebSocket closed');
+          enableStartButton();
+        };
+    
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          const container = document.getElementById('responseContainer');
+    
+          let existingUnconfirmed = document.getElementById("unconfirmedText");
+          if (!existingUnconfirmed) {
+            existingUnconfirmed = document.createElement("div");
+            existingUnconfirmed.id = "unconfirmedText";
+            existingUnconfirmed.className = "unconfirmed";
+            container.appendChild(existingUnconfirmed);
+          }
+    
+          existingUnconfirmed.textContent = data.unconfirmed || "";
+    
+          if (data.confirmed) {
+            const bubble = document.createElement("div");
+            bubble.className = "confirmed-bubble";
+            bubble.textContent = data.confirmed;
+            container.insertBefore(bubble, existingUnconfirmed);
+          }
+    
+          container.scrollTop = container.scrollHeight;
+        };
+      });
+    }
+    
+    function disableStartButton() {
+      document.getElementById('startButton').disabled = true;
+      document.getElementById('stopButton').disabled = false;
+    }
+    
+    function enableStartButton() {
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('stopButton').disabled = true;
+    }
+    
+    document.getElementById('startButton').onclick = async () => {
+      document.getElementById("responseContainer").innerHTML = "";
+      document.getElementById("responseContainer").style.borderColor = "green"; // 加绿色边框
+      disableStartButton();
+    
+      try {
+        await setupWebSocket();
+      } catch (e) {
+        enableStartButton();
+        document.getElementById("responseContainer").style.borderColor = "red"; // 恢复红色边框（连接失败）
+        return;
+      }
+    
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        recorder = RecordRTC(stream, {
+          type: 'audio',
+          recorderType: StereoAudioRecorder,
+          mimeType: 'audio/wav',
+          timeSlice: 500,
+          desiredSampRate: 16000,
+          numberOfAudioChannels: 1,
+          ondataavailable: async blob => {
+            const base64 = await blobToBase64(blob);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(base64);
+            }
+          }
+        });
+        recorder.startRecording();
+      });
+    };
+    
+    document.getElementById('stopButton').onclick = () => {
+      if (recorder) recorder.stopRecording();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close(1000, "User stopped streaming");
+      }
+      document.getElementById("responseContainer").style.borderColor = "red"; // 恢复红色边框
+      enableStartButton();
+    };
+    </script>
+    
+
+</body>
+</html>
