@@ -7,44 +7,86 @@ from faster_whisper import WhisperModel
 # =======================
 # Audio Buffer Class
 # =======================
+
 class AudioBuffer:
     def __init__(self, max_duration=10.0, target_sr=16000):
-        self.buffer = np.array([])
-        self.sample_rate = None
-        self.max_duration = max_duration
+        """
+        初始化音频缓冲区
+
+        Args:
+            max_duration (float): 缓冲区最大时长（秒），超过时会自动裁剪旧数据。
+            target_sr (int): 模型期望的采样率，默认 16kHz。
+        """
+        self.buffer = np.array([], dtype=np.float32)  # 始终为 target_sr 采样率的音频数据
         self.target_sr = target_sr
+        self.max_duration = max_duration
 
     def append(self, chunk, sample_rate):
-        if chunk.ndim == 2:  # 双声道或多声道音频
-            chunk = np.mean(chunk, axis=1)  # 转为单声道
+        """
+        添加一段新音频到缓冲区，并进行重采样（如需要）
 
-        if self.sample_rate is None:
-            self.sample_rate = sample_rate
-        elif self.sample_rate != sample_rate:
-            raise ValueError(f"Expected sample rate {self.sample_rate}, got {sample_rate}")
+        Args:
+            chunk (np.ndarray): 新的音频数据，shape=(n,) 或 (n, 2)。
+            sample_rate (int): 该音频的采样率。
 
-        self.buffer = np.concatenate([self.buffer, chunk])
-        max_samples = int(self.sample_rate * self.max_duration)
+        Returns:
+            float | None: 如果触发裁剪，返回被裁剪掉的起始时间（单位秒），否则返回 None。
+        """
+        if chunk.ndim == 2:
+            # 若为多声道音频，取平均转为单声道
+            chunk = np.mean(chunk, axis=1)
+
+        if sample_rate != self.target_sr:
+            # 重采样为 target_sr
+            chunk = librosa.resample(chunk, orig_sr=sample_rate, target_sr=self.target_sr)
+
+        # 拼接到缓冲区
+        self.buffer = np.concatenate([self.buffer, chunk.astype(np.float32)])
+
+        # 超出最大长度，裁剪旧数据
+        max_samples = int(self.target_sr * self.max_duration)
         if len(self.buffer) > max_samples:
-            trim_start_time = len(self.buffer) / self.sample_rate - self.max_duration
+            trim_start_time = len(self.buffer) / self.target_sr - self.max_duration
             self.buffer = self.buffer[-max_samples:]
             return trim_start_time
+
         return None
 
     def trim_to_timestamp(self, timestamp_end):
-        end_sample = int(timestamp_end * self.sample_rate)
+        """
+        从指定时间戳处开始裁剪缓冲区（丢弃 timestamp_end 之前的音频）
+
+        Args:
+            timestamp_end (float): 时间戳（单位：秒）
+        """
+        end_sample = int(timestamp_end * self.target_sr)
         self.buffer = self.buffer[end_sample:]
 
     def get_resampled_audio(self):
-        if self.sample_rate != self.target_sr:
-            return librosa.resample(self.buffer, orig_sr=self.sample_rate, target_sr=self.target_sr).astype(np.float32)
-        return self.buffer.astype(np.float32)
+        """
+        获取当前缓冲区的音频数据（已是 target_sr，无需再次处理）
+
+        Returns:
+            np.ndarray: 单通道 float32 音频，采样率为 target_sr。
+        """
+        return self.buffer
+
+
 
 # =======================
 # Streaming Pipeline
 # =======================
 class WhisperStreamingPipeline:
     def __init__(self, model_size="large-v3", device="cuda", compute_type="float16", download_root="./models",):
+        """
+        初始化Whisper模型与音频缓冲区，以及状态缓存。
+
+        Args:
+            model_size (str): Whisper模型版本。
+            device (str): 推理设备（如cuda）。
+            compute_type (str): 计算精度。
+            download_root (str): 模型下载目录。
+        """
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=download_root)
         self.audio_buffer = AudioBuffer()
 
@@ -55,6 +97,9 @@ class WhisperStreamingPipeline:
         self.prompt = "こんばんは。"
 
     def _run_inference(self, language="ja", task="transcribe", vad_filter=True):
+        """
+        使用Whisper模型对缓冲区音频进行转录推理。
+        """
         audio = self.audio_buffer.get_resampled_audio()  # 确保送入Whisper模型的音频始终为16kHz
         segments_gen, _ = self.model.transcribe(
             audio,
@@ -109,7 +154,9 @@ class WhisperStreamingPipeline:
         return newly_confirmed, still_unconfirmed
 
     def _update_buffer_on_punctuation(self):
-        # 从后往前找包含句末标点的词并裁剪缓冲区
+        """
+        从后往前找包含句末标点的词并裁剪缓冲区
+        """
         sentence_endings = ["。", "？", "！", "?", "!"]
         for word in reversed(self.confirmed_words):
             if any(p in word.word for p in sentence_endings):
@@ -117,7 +164,7 @@ class WhisperStreamingPipeline:
                 return word.end  # 返回裁剪的时间点
         return None
 
-    def _on_buffer_trim(self, trim_timestamp, max_prompt_len=200):
+    def _on_buffer_trim(self, trim_timestamp, max_prompt_len=100):
         """
         1. 补全 prompt（可用 prev_words）
         2. 清理 confirmed_words / prev_words / prev_prev_words 中过时内容
@@ -148,7 +195,33 @@ class WhisperStreamingPipeline:
         self.prev_words = trim_and_shift(self.prev_words)
         self.prev_prev_words = trim_and_shift(self.prev_prev_words)
 
-    def process_audio_chunk(self, chunk, sr, max_prompt_len=200, language="ja", task="transcribe", vad_filter=True):
+    def process_audio_chunk(self, chunk, sr, max_prompt_len=100, language="ja", task="transcribe", vad_filter=True):
+        """
+        处理单个音频chunk，执行完整的音频缓冲、重采样、Whisper推理和LocalAgreement确认流程。
+
+        具体步骤如下：
+        1. 音频chunk添加到缓冲区，进行必要的单声道转换与重采样。
+        2. 如果音频长度超出缓冲区设定，自动进行裁剪和状态缓存的更新。
+        3. 使用Whisper模型进行推理，识别音频中的单词和片段。
+        4. 执行LocalAgreement-2策略，与之前识别的结果进行对比，确认最新的单词。
+        5. 根据确认的句末标点，对缓冲区音频再次进行裁剪，及时释放内存和加快推理速度。
+
+        Args:
+            chunk (np.ndarray): 输入的音频数据，通常为实时采集的一小段音频。
+            sr (int): 输入音频数据的采样率。
+            max_prompt_len (int): prompt的最大长度（字符数），用于Whisper模型推理时的提示。
+            language (str): Whisper识别的语言，默认为日语（"ja"）。
+            task (str): Whisper模型执行的任务类型，默认"transcribe"为转录。
+            vad_filter (bool): 是否使用VAD过滤静音部分，默认为True。
+
+        Returns:
+            dict: 包含以下键值的结果字典：
+                - "confirmed": 最新确认的转录文本。
+                - "unconfirmed": 尚未确认的转录文本。
+                - "full_transcription": 当前音频chunk的完整转录文本。
+                - "prompt": 更新后的prompt文本。
+                - "segments": Whisper模型返回的识别片段详细信息。
+        """
         trim_timestamp = self.audio_buffer.append(chunk, sr)
         if trim_timestamp is not None:
             self._on_buffer_trim(trim_timestamp, max_prompt_len=max_prompt_len)
