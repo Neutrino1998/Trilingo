@@ -1,4 +1,4 @@
-# Whisper Streaming Pipeline
+# Whisper Streaming Pipeline (*Broken)
 
 本项目是基于 [Faster-Whisper](https://github.com/guillaumekln/faster-whisper) 的实时流式语音转录与同声传译管道，专为日语实时场景（如演讲、演唱会、会议）设计。通过高效的音频缓冲区管理、LocalAgreement-2 稳定确认策略和动态提示更新机制，实现了低延迟、高精度的实时语音转录与翻译。
 
@@ -44,7 +44,7 @@ file:///your_project_path/index.html
 
 点击页面上的 **Start** 按钮，即可开始从麦克风采集音频并推送至后端。每隔 500ms 推送一次音频片段，并通过 WebSocket 获取转写结果，实时展示字幕：
 
-- ✅ **绿色边框**：正在推理中
+- 🟢 **绿色边框**：正在推理中
 - 🔴 **红色边框**：未连接或推理已停止
 
 ---
