@@ -57,11 +57,13 @@ async def process_audio_stream(audio_path, chunk_duration=2.0, start_time=0.0, e
         print(f"[{realtime_status} Chunk] processed: {processed_duration:.2f}s, chunk_processing: {processing_time:.2f}s, "
               f"realtime_factor: {realtime_factor:.2f}")
 
-        if result["confirmed"]:
-            print(f"[✔ Confirmed] {result['confirmed']}")
+        if result["confirmed"] or result["forced_confirmed"]:
+            print(f"[✅ Confirmed] {result['confirmed']}")
+            print(f"[☑️ Force-Confirmed] {result['forced_confirmed']}")
+
 
     total_wall_time = time.time() - start_wall_time
-    print(f"[✔ Done] Total audio duration: {processed_duration:.2f}s, wall_time: {total_wall_time:.2f}s, "
+    print(f"[✅ Done] Total audio duration: {processed_duration:.2f}s, wall_time: {total_wall_time:.2f}s, "
           f"overall_realtime_factor: {total_wall_time / processed_duration:.2f}")
 
 
