@@ -4,6 +4,7 @@ import numpy as np
 import librosa
 from faster_whisper import WhisperModel
 import copy
+import re
 
 # =======================
 # Audio Buffer Class
@@ -115,7 +116,7 @@ class WhisperStreamingPipeline:
         if not self.prompt:
             # 预设附带标点的提示词避免faster-whisper转译内容不输出标点
             if language == "ja":
-                self.prompt = "こんばんは。"
+                self.prompt = "どうも。"
             elif language == "en":
                 self.prompt = "Hi."
         audio = self.audio_buffer.get_resampled_audio()  # 确保送入Whisper模型的音频始终为16kHz
@@ -181,12 +182,16 @@ class WhisperStreamingPipeline:
 
         if self.verbose:
             print_debug_info(new_words, new_unconfirmed, prev_unconfirmed, prev_prev_unconfirmed)
-
+        
         # 3. 进行 LCP 匹配：比对未确认部分的最长公共前缀
+        def normalize_word(word: str) -> str:
+            # 去除单词前后的标点符号，仅保留核心文字部分。
+            return re.sub(r'^[\"\'“¿\(\[\{\-]*|[\"\'。．.、,，!！?？:：”\)\]\}、]*$', '', word)
+        
         def longest_common_prefix(w1, w2):
             lcp = 0
             for a, b in zip(w1, w2):
-                if a.word != b.word:
+                if normalize_word(a.word) != normalize_word(b.word):
                     break
                 lcp += 1
             return lcp
