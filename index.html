@@ -43,7 +43,17 @@
       display: inline-block;
       max-width: 100%;
     }
-  
+    
+    .forced-bubble {
+      background: #fff8c4; /* 浅黄色 */
+      color: #6b5500;
+      padding: 0.5rem 1rem;
+      margin: 0.5rem 0;
+      border-radius: 10px;
+      display: inline-block;
+      max-width: 100%;
+    }
+
     .unconfirmed {
       color: #888;
       font-style: italic;
@@ -150,7 +160,15 @@
           }
     
           existingUnconfirmed.textContent = data.unconfirmed || "";
-    
+          
+          // 插入 forced_confirmed（如果存在）
+          if (data.forced_confirmed) {
+            const bubble = document.createElement("div");
+            bubble.className = "forced-bubble";  // 用不同的样式类
+            bubble.textContent = data.forced_confirmed;
+            container.insertBefore(bubble, existingUnconfirmed);
+          }
+          // 插入 confirmed（如果存在）
           if (data.confirmed) {
             const bubble = document.createElement("div");
             bubble.className = "confirmed-bubble";
