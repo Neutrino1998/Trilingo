@@ -3,6 +3,7 @@
 import numpy as np
 import librosa
 from faster_whisper import WhisperModel
+import copy
 
 # =======================
 # Audio Buffer Class
@@ -47,6 +48,7 @@ class AudioBuffer:
         max_samples = int(self.target_sr * self.max_duration)
         if len(self.buffer) > max_samples:
             trim_start_time = len(self.buffer) / self.target_sr - self.max_duration
+            print(f"[✂️ Trimming Buffer] {trim_start_time:.2f}s (due to max limit)")
             self.buffer = self.buffer[-max_samples:]
             return trim_start_time
 
@@ -59,6 +61,7 @@ class AudioBuffer:
         Args:
             timestamp_end (float): 时间戳（单位：秒）
         """
+        print(f"[✂️ Trimming Buffer] {timestamp_end:.2f}s (due to punctuation)")
         end_sample = int(timestamp_end * self.target_sr)
         self.buffer = self.buffer[end_sample:]
 
@@ -72,19 +75,21 @@ class AudioBuffer:
         return self.buffer
 
 
-
 # =======================
 # Streaming Pipeline
 # =======================
 class WhisperStreamingPipeline:
-    def __init__(self, model_size="large-v3", device="cuda", compute_type="float16", download_root="./models",):
+    def __init__(self, model_size="large-v3", device="cuda", compute_type="float16", download_root="./models", verbose=True):
         """
         初始化Whisper模型与音频缓冲区，以及状态缓存。
 
         Args:
-            model_size (str): Whisper模型版本。
-            device (str): 推理设备（如cuda）。
+            model_size (str): Whisper模型版本。(tiny, tiny.en, base, base.en,
+                small, small.en, distil-small.en, medium, medium.en, distil-medium.en, large-v1,
+                large-v2, large-v3, large, distil-large-v2, distil-large-v3, large-v3-turbo, or turbo)
+            device (str): 推理设备 ("cpu", "cuda", "auto")。
             compute_type (str): 计算精度。
+                See https://opennmt.net/CTranslate2/quantization.html.
             download_root (str): 模型下载目录。
         """
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=download_root)
@@ -94,12 +99,25 @@ class WhisperStreamingPipeline:
         self.prev_words = []
         self.prev_prev_words = []
 
-        self.prompt = "こんばんは。"
+        self.prompt = ""
+
+        self.verbose = verbose
 
     def _run_inference(self, language="ja", task="transcribe", vad_filter=True):
         """
         使用Whisper模型对缓冲区音频进行转录推理。
+        Args:
+            language: Whisper识别的语言，默认为日语（"ja"）。
+            task: Whisper模型执行的任务类型，默认"transcribe"为转录 (transcribe or translate)。
+            vad_filter: 是否使用VAD过滤静音部分，默认为True。
+                See https://github.com/snakers4/silero-vad.
         """
+        if not self.prompt:
+            # 预设附带标点的提示词避免faster-whisper转译内容不输出标点
+            if language == "ja":
+                self.prompt = "こんばんは。"
+            elif language == "en":
+                self.prompt = "Hi."
         audio = self.audio_buffer.get_resampled_audio()  # 确保送入Whisper模型的音频始终为16kHz
         segments_gen, _ = self.model.transcribe(
             audio,
@@ -120,7 +138,7 @@ class WhisperStreamingPipeline:
         segments = list(segments_gen)  # 强制缓存生成器
         word_list = extract_word_list(segments)
         return segments, word_list
-
+    
     def _local_agreement(self, new_words):
         """
         使用 LocalAgreement-2 策略，根据上次确认的最后时间戳筛选新旧推理结果的未确认部分，
@@ -133,23 +151,57 @@ class WhisperStreamingPipeline:
         def filter_after_timestamp(words):
             return [w for w in words if w.start >= last_confirmed_end]
 
+        prev_prev_unconfirmed = filter_after_timestamp(self.prev_prev_words)
         prev_unconfirmed = filter_after_timestamp(self.prev_words)
         new_unconfirmed = filter_after_timestamp(new_words)
 
+        def print_debug_info(new_words, new_unconfirmed, prev_unconfirmed, prev_prev_unconfirmed):
+            def words_info(words):
+                if not words:
+                    return ""
+                ts_info= f"{words[0].start:.2f}-{words[-1].end:.2f}"
+                word_content = f"{''.join([w.word for w in words])}"
+                return f"[{ts_info:<11}] {word_content}"
+            
+            def log_format(label, words):
+                print(f"[{label:<20}] {words}")
+
+            print("=" * 80)
+            log_format(f"✔ Prompt", self.prompt)
+            log_format(f"✔ Prev-Confirmed", words_info(self.confirmed_words))
+            print("-" * 70)
+            log_format(f"✘ P-Prev-Words", words_info(self.prev_prev_words))
+            log_format(f"✘ Prev-Words", words_info(self.prev_words))
+            log_format(f"✘ New-Words", words_info(new_words))
+            print("-" * 70)
+            log_format(f"✘ P-Prev-Unconfirmed", words_info(prev_prev_unconfirmed))
+            log_format(f"✘ Prev-Unconfirmed", words_info(prev_unconfirmed))
+            log_format(f"✘ New-Unconfirmed", words_info(new_unconfirmed))
+            print("=" * 80)
+
+        if self.verbose:
+            print_debug_info(new_words, new_unconfirmed, prev_unconfirmed, prev_prev_unconfirmed)
+
         # 3. 进行 LCP 匹配：比对未确认部分的最长公共前缀
-        lcp = 0
-        for w1, w2 in zip(prev_unconfirmed, new_unconfirmed):
-            if w1.word != w2.word:
-                break
-            lcp += 1
+        def longest_common_prefix(w1, w2):
+            lcp = 0
+            for a, b in zip(w1, w2):
+                if a.word != b.word:
+                    break
+                lcp += 1
+            return lcp
+        
+        lcp_prev = longest_common_prefix(prev_unconfirmed, new_unconfirmed)
+        lcp_prev_prev = longest_common_prefix(prev_prev_unconfirmed, new_unconfirmed)
+        lcp = lcp_prev if lcp_prev >= lcp_prev_prev else lcp_prev_prev
 
         newly_confirmed = new_unconfirmed[:lcp]
         still_unconfirmed = new_unconfirmed[lcp:]
 
         # 4. 更新状态缓存
-        self.confirmed_words.extend(newly_confirmed)
-        self.prev_prev_words = self.prev_words
-        self.prev_words = new_words
+        self.confirmed_words.extend(copy.deepcopy(newly_confirmed))
+        self.prev_prev_words = copy.deepcopy(self.prev_words)
+        self.prev_words = copy.deepcopy(new_words)
 
         return newly_confirmed, still_unconfirmed
 
@@ -157,7 +209,7 @@ class WhisperStreamingPipeline:
         """
         从后往前找包含句末标点的词并裁剪缓冲区
         """
-        sentence_endings = ["。", "？", "！", "?", "!"]
+        sentence_endings = ["。", "？", "！", "?", "!", "."]
         for word in reversed(self.confirmed_words):
             if any(p in word.word for p in sentence_endings):
                 self.audio_buffer.trim_to_timestamp(word.end)
@@ -170,22 +222,23 @@ class WhisperStreamingPipeline:
         2. 清理 confirmed_words / prev_words / prev_prev_words 中过时内容
         3. 所有词时间戳向前平移 trim_timestamp
         """
+        forced_confirmed_words = []
         last_confirmed_end = self.confirmed_words[-1].end if self.confirmed_words else 0.0
 
         # Step 1: 构建 prompt 内容
-        prompt_segment = [w.word for w in self.confirmed_words if w.end <= trim_timestamp]
+        prompt_segment = [w for w in self.confirmed_words if w.end <= trim_timestamp]
         if trim_timestamp > last_confirmed_end:
-            prev_supplement = [
-                w.word for w in self.prev_words
+            forced_confirmed_words = [
+                w for w in self.prev_words
                 if last_confirmed_end < w.end <= trim_timestamp
             ]
-            prompt_segment.extend(prev_supplement)
-        combined_prompt = self.prompt + "".join(prompt_segment)
+            prompt_segment.extend(forced_confirmed_words)
+        combined_prompt = self.prompt + "".join([w.word for w in prompt_segment])
         self.prompt = combined_prompt[-max_prompt_len:]
 
         # Step 2: 清理 + 平移时间戳
         def trim_and_shift(words):
-            trimmed = [w for w in words if w.end >= trim_timestamp]
+            trimmed = [w for w in words if w.end > trim_timestamp]
             for w in trimmed:
                 w.start -= trim_timestamp
                 w.end -= trim_timestamp
@@ -194,6 +247,8 @@ class WhisperStreamingPipeline:
         self.confirmed_words = trim_and_shift(self.confirmed_words)
         self.prev_words = trim_and_shift(self.prev_words)
         self.prev_prev_words = trim_and_shift(self.prev_prev_words)
+
+        return forced_confirmed_words
 
     def process_audio_chunk(self, chunk, sr, max_prompt_len=100, language="ja", task="transcribe", vad_filter=True):
         """
@@ -223,13 +278,14 @@ class WhisperStreamingPipeline:
                 - "segments": Whisper模型返回的识别片段详细信息。
         """
         trim_timestamp = self.audio_buffer.append(chunk, sr)
+        forced_confirmed_words = []
         if trim_timestamp is not None:
-            self._on_buffer_trim(trim_timestamp, max_prompt_len=max_prompt_len)
+            forced_confirmed_words = self._on_buffer_trim(trim_timestamp, max_prompt_len=max_prompt_len)
         
         try:
             segments, word_list = self._run_inference(language=language, task=task, vad_filter=vad_filter)
         except Exception as e:
-            print(f"[Error] Whisper inference failed: {e}")
+            print(f"[⚠️ Error] Whisper inference failed: {e}")
             return {"confirmed": "", "unconfirmed": "", "full_transcription": "", "prompt": self.prompt, "segments": []}
         
         newly_confirmed, unconfirmed = self._local_agreement(word_list)
@@ -241,6 +297,7 @@ class WhisperStreamingPipeline:
 
         return {
             "confirmed": "".join([w.word for w in newly_confirmed]),
+            "forced_confirmed": "".join([w.word for w in forced_confirmed_words]), 
             "unconfirmed": "".join([w.word for w in unconfirmed]),
             "full_transcription": "".join([w.word for w in word_list]),
             "prompt": self.prompt,
