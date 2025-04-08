@@ -106,6 +106,9 @@ file:///your_project_path/index.html
 - [Whisper Streaming by UFAL](https://github.com/ufal/whisper_streaming)
 - [Faster-Whisper](https://github.com/guillaumekln/faster-whisper)
 
+## 致谢
+**GPT** - The coding machine.
+
 ## 许可证
 本项目遵循 MIT 协议。
 
