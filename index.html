@@ -112,8 +112,6 @@
 
   <script src="https://www.WebRTC-Experiment.com/RecordRTC.js"></script>
   <script>
-    let ws;
-    let recorder;
     
     function blobToBase64(blob) {
       return new Promise((resolve, reject) => {
@@ -127,30 +125,51 @@
       });
     }
     
-    function setupWebSocket() {
+    let ws;
+    let recorder;
+    let reconnectInterval = 1000;  // 初始重连等待 1 秒
+    const maxReconnectInterval = 10000;
+    let isManualClose = false;
+    let isRecording = false;  // 是否正在录音
+    let connectionStatus = "disconnected";
+    let lastMessageTime = Date.now();  // 用于超时监控
+
+    async function setupWebSocket() {
       return new Promise((resolve, reject) => {
         ws = new WebSocket('ws://localhost:8000/ws');
-    
+
         ws.onopen = () => {
           console.log('✅ WebSocket opened');
+          reconnectInterval = 1000; // 重置等待时间
+          updateConnectionStatus("connected");
+          lastMessageTime = Date.now();  // 初始化消息时间
           resolve(ws);
         };
-    
+
         ws.onerror = (err) => {
-          console.error('❌ WebSocket connection error:', err);
-          alert('❌ 无法连接到后端服务器，请确认 FastAPI 是否在运行。');
-          reject(err);
+          console.error('❌ WebSocket error:', err);
+          ws.close();
         };
-    
+
         ws.onclose = () => {
-          console.log('🔌 WebSocket closed');
-          enableStartButton();
+          console.warn('🔌 WebSocket closed');
+          if (!isManualClose) {
+            updateConnectionStatus("reconnecting");
+            setTimeout(() => {
+              setupWebSocket().catch(() => {});
+            }, reconnectInterval);
+            reconnectInterval = Math.min(reconnectInterval * 2, maxReconnectInterval);
+          } else {
+            enableStartButton();
+            updateConnectionStatus("disconnected");
+          }
         };
-    
+
         ws.onmessage = (event) => {
+          lastMessageTime = Date.now();
           const data = JSON.parse(event.data);
           const container = document.getElementById('responseContainer');
-    
+
           let existingUnconfirmed = document.getElementById("unconfirmedText");
           if (!existingUnconfirmed) {
             existingUnconfirmed = document.createElement("div");
@@ -158,28 +177,28 @@
             existingUnconfirmed.className = "unconfirmed";
             container.appendChild(existingUnconfirmed);
           }
-    
+
           existingUnconfirmed.textContent = data.unconfirmed || "";
-          
-          // 插入 forced_confirmed（如果存在）
+
           if (data.forced_confirmed) {
             const bubble = document.createElement("div");
-            bubble.className = "forced-bubble";  // 用不同的样式类
+            bubble.className = "forced-bubble";
             bubble.textContent = data.forced_confirmed;
             container.insertBefore(bubble, existingUnconfirmed);
           }
-          // 插入 confirmed（如果存在）
+
           if (data.confirmed) {
             const bubble = document.createElement("div");
             bubble.className = "confirmed-bubble";
             bubble.textContent = data.confirmed;
             container.insertBefore(bubble, existingUnconfirmed);
           }
-    
+
           container.scrollTop = container.scrollHeight;
         };
       });
     }
+
     
     function disableStartButton() {
       document.getElementById('startButton').disabled = true;
@@ -193,17 +212,18 @@
     
     document.getElementById('startButton').onclick = async () => {
       document.getElementById("responseContainer").innerHTML = "";
-      document.getElementById("responseContainer").style.borderColor = "green"; // 加绿色边框
+      isRecording = true;
       disableStartButton();
-    
+
       try {
         await setupWebSocket();
       } catch (e) {
         enableStartButton();
-        document.getElementById("responseContainer").style.borderColor = "red"; // 恢复红色边框（连接失败）
+        isRecording = false;
+        updateConnectionStatus("disconnected");
         return;
       }
-    
+
       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
         recorder = RecordRTC(stream, {
           type: 'audio',
@@ -221,16 +241,53 @@
         });
         recorder.startRecording();
       });
+      updateBorderColor();
     };
+
     
     document.getElementById('stopButton').onclick = () => {
+      isManualClose = true;
+      isRecording = false;
       if (recorder) recorder.stopRecording();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close(1000, "User stopped streaming");
       }
-      document.getElementById("responseContainer").style.borderColor = "red"; // 恢复红色边框
+      updateBorderColor();
       enableStartButton();
     };
+
+
+
+    // 每 5 秒检查一次是否超时（15秒没收到消息就自动断线）
+    setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        if (Date.now() - lastMessageTime > 15000) {
+          console.warn("⚠️ 长时间未收到消息，自动重连...");
+          ws.close();
+        }
+      }
+    }, 5000);
+
+    // 根据连接状态修改边框颜色
+    function updateConnectionStatus(status) {
+      connectionStatus = status;
+      updateBorderColor();
+    }
+
+    function updateBorderColor() {
+      const container = document.getElementById("responseContainer");
+      if (!container) return;
+
+      if (connectionStatus === "reconnecting") {
+        container.style.borderColor = "orange";
+      } else if (!isRecording) {
+        container.style.borderColor = "red";
+      } else {
+        container.style.borderColor = "green";
+      }
+    }
+
+
     </script>
     
 
